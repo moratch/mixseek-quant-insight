@@ -1,0 +1,6 @@
+[[metrics]]
+name = "CorrelationSharpeRatio"
+weight = 1.0
+
+[custom_metrics]
+CorrelationSharpeRatio = { module = "quant_insight.evaluator.correlation_sharpe_ratio", class = "CorrelationSharpeRatio" }

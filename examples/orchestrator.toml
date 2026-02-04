@@ -1,0 +1,13 @@
+[orchestrator]
+min_rounds = 3
+max_rounds = 5
+timeout_per_team_seconds = 3600
+
+evaluator_config = "configs/evaluator.toml"
+
+# Team configurations
+[[orchestrator.teams]]
+config = "configs/agents/teams/minimal_gemini_stochastic.toml"
+
+[[orchestrator.teams]]
+config = "configs/agents/teams/minimal_gemini_deterministic.toml"

@@ -1,0 +1,31 @@
+[competition]
+name = "sample competition"
+description = "株価シグナル生成コンペティションサンプル"
+
+# データセット設定（ohlcvとreturnsは必須）
+# パスは {MIXSEEK_WORKSPACE}/data/inputs/{name}/ で固定
+[[competition.data]]
+name = "ohlcv"
+datetime_column = "datetime"
+
+[[competition.data]]
+name = "returns"
+datetime_column = "datetime"
+
+[[competition.data]]
+name = "master"
+datetime_column = "datetime"
+
+# 追加データの例（任意）
+# [[competition.data]]
+# name = "fundamentals"
+# datetime_column = "datetime"
+
+[competition.data_split]
+train_end = "2021-12-31T23:59:59"  # datetime形式
+valid_end = "2023-12-31T23:59:59"
+purge_rows = 1  # リターン計算window幅に応じて設定
+
+[competition.return_definition]
+window = 1
+method = "open2close" # "open2close", "close2close" から選択
