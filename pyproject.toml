@@ -21,10 +21,10 @@ classifiers = [
 ]
 keywords = ["algorithmic-trading", "trading-strategies", "mixseek", "multi-agent", "quantitative-finance"]
 dependencies = [
+    "mixseek-core>=v0.1.0a8",
     "pydantic>=2.12.5",
     "pydantic-ai>=1.39.0",
     "typer>=0.20.0",
-    "mixseek-core @ git+https://github.com/mixseek/mixseek-core.git@develop",
     "polars>=1.36.1",
     "pandas>=2.2.0",
     "scipy>=1.15.2",
