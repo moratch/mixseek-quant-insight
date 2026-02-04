@@ -1,0 +1,26 @@
+# Test competition configuration
+
+[competition]
+name = "Test Quant Competition"
+description = "Test competition for unit testing"
+
+[[competition.data]]
+name = "ohlcv"
+datetime_column = "datetime"
+
+[[competition.data]]
+name = "returns"
+datetime_column = "datetime"
+
+[[competition.data]]
+name = "fundamentals"
+datetime_column = "timestamp"
+
+[competition.data_split]
+train_end = 2023-01-31T23:59:59
+valid_end = 2023-06-30T23:59:59
+purge_rows = 1
+
+[competition.return_definition]
+window = 5
+method = "open2close"
