@@ -13,8 +13,7 @@
 まず、最小構成のDockerイメージをビルドします。
 
 ```bash
-cd dockerfiles/minimal
-make build
+make -C dockerfiles/minimal build
 ```
 
 ビルドには数分かかる場合があります。完了すると `mixseek-quant-insight/minimal:latest` イメージが作成されます。
@@ -24,8 +23,7 @@ make build
 `.env.template` をコピーして `.env` ファイルを作成し、必要な環境変数を設定します。
 
 ```bash
-cd dockerfiles/minimal
-cp .env.template .env
+cp dockerfiles/minimal/.env.template dockerfiles/minimal/.env
 ```
 
 `.env` ファイルを編集し、以下の環境変数を設定してください：
@@ -40,7 +38,7 @@ MIXSEEK_WORKSPACE=/app/workspace
 JQUANTS_API_KEY=your-jquants-api-key
 
 # Google AI API キー（Geminiモデル使用時）
-GEMINI_API_KEY=your-gemini-api-key
+GOOGLE_API_KEY=your-google-api-key
 ```
 
 **注意**: ワークスペースディレクトリは `quant-insight setup` で自動作成されます。
@@ -60,10 +58,10 @@ GEMINI_API_KEY=your-gemini-api-key
 
 ```bash
 # コンテナをバックグラウンドで起動
-make run
+make -C dockerfiles/minimal run
 
 # コンテナ内のシェルに接続
-make bash
+make -C dockerfiles/minimal bash
 ```
 
 以降のコマンドはすべてコンテナ内で実行します。

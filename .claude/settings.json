@@ -5,15 +5,9 @@
   ],
   "permissions": {
     "deny": [
-      "Read(.cred/**)",
-      "Read(.env)",
-      "Read(.env.*)",
-      "Write(.cred/**)",
-      "Write(.env)",
-      "Write(.env.*)",
-      "Edit(.cred/**)",
-      "Edit(.env)",
-      "Edit(.env.*)"
+      "Read(dockerfiles/minimal/.env)",
+      "Write(dockerfiles/minimal/.env)",
+      "Edit(dockerfiles/minimal/.env)"
     ]
   }
 }
