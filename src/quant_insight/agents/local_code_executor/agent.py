@@ -7,6 +7,7 @@ import importlib
 from typing import Any, cast
 
 from mixseek.agents.member.base import BaseMemberAgent
+from mixseek.core.auth import create_authenticated_model
 from mixseek.models.member_agent import AgentType, MemberAgentConfig, MemberAgentResult, ResultStatus
 from pydantic import BaseModel
 from pydantic_ai import Agent
@@ -42,8 +43,11 @@ class LocalCodeExecutorAgent(BaseMemberAgent):
         output_type = self._resolve_output_type()
         model_settings = self._create_model_settings()
 
+        # create_authenticated_model()を使用してカスタムプロバイダー(GLM等)をサポート
+        authenticated_model = create_authenticated_model(self.config.model)
+
         self.agent: Agent[LocalCodeExecutorConfig, Any] = Agent(
-            model=self.config.model,
+            model=authenticated_model,
             deps_type=LocalCodeExecutorConfig,
             output_type=output_type,
             toolsets=[local_code_executor_toolset],  # type: ignore[list-item]

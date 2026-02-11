@@ -17,3 +17,7 @@ class DataConfig(BaseModel):
         default="datetime",
         description="Datetime column name in the dataset",
     )
+    required: bool = Field(
+        default=True,
+        description="Whether this dataset is required. If False, missing files are skipped.",
+    )

@@ -40,10 +40,16 @@ class TestDataConfigSerialization:
         """Test model_dump returns correct dict."""
         config = DataConfig(name="sentiment", datetime_column="date")
         data = config.model_dump()
-        assert data == {"name": "sentiment", "datetime_column": "date"}
+        assert data == {"name": "sentiment", "datetime_column": "date", "required": True}
 
     def test_model_dump_with_defaults(self) -> None:
         """Test model_dump with default values."""
         config = DataConfig(name="ohlcv")
         data = config.model_dump()
-        assert data == {"name": "ohlcv", "datetime_column": "datetime"}
+        assert data == {"name": "ohlcv", "datetime_column": "datetime", "required": True}
+
+    def test_model_dump_optional_dataset(self) -> None:
+        """Test model_dump for optional dataset."""
+        config = DataConfig(name="indicators", required=False)
+        data = config.model_dump()
+        assert data == {"name": "indicators", "datetime_column": "datetime", "required": False}

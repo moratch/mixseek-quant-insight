@@ -209,6 +209,9 @@ def split_data(
             datasets[name] = pl.read_parquet(parquet_path)
         elif csv_path.exists():
             datasets[name] = pl.read_csv(csv_path)
+        elif not data_config.required:
+            typer.echo(f"  Skipping optional dataset '{name}' (not found)")
+            continue
         else:
             typer.echo(f"Error: Dataset '{name}' not found at {parquet_path} or {csv_path}", err=True)
             if name == "returns":
@@ -219,15 +222,18 @@ def split_data(
 
     typer.echo(f"  Loaded datasets: {list(datasets.keys())}")
 
-    # データ分割
+    # データ分割（各データセットのdatetime_columnを使用）
     splitter = DataSplitter()
+    config_map = {cfg.name: cfg for cfg in config.data}
 
     for name, df in datasets.items():
+        cfg = config_map[name]
         train, valid, test = splitter.split_by_datetime(
             df,
             train_end=config.data_split.train_end,
             valid_end=config.data_split.valid_end,
             purge_rows=config.data_split.purge_rows,
+            datetime_column=cfg.datetime_column,
         )
 
         # 出力ディレクトリ作成と保存
