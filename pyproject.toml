@@ -35,6 +35,9 @@ dependencies = [
     "tqdm>=4.67.0",
 ]
 
+[project.optional-dependencies]
+api = ["fastapi>=0.115.0", "uvicorn[standard]>=0.34.0"]
+
 [project.scripts]
 quant-insight = "quant_insight.cli.main:app"
 
@@ -104,6 +107,10 @@ ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
 module = "plotly.*"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "uvicorn"
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]

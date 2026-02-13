@@ -23,6 +23,17 @@ app.add_typer(db_app, name="db")
 app.add_typer(export_app, name="export")
 app.add_typer(screening_app, name="screening")
 
+# api は optional - fastapi/uvicorn 未導入でも CLI は起動可能
+try:
+    from quant_insight.cli.commands.api import api_app
+
+    app.add_typer(api_app, name="api")
+except ModuleNotFoundError as e:
+    if e.name in {"fastapi", "uvicorn"}:
+        pass  # [api] extra not installed — api subcommand unavailable
+    else:
+        raise  # 内部バグ由来の ModuleNotFoundError は再raise
+
 
 @app.command()
 def version() -> None:

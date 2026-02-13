@@ -53,6 +53,10 @@ def run_screening(
         str | None,
         typer.Option("--output", "-o", help="Output JSON path (default: stdout)"),
     ] = None,
+    persist: Annotated[
+        bool,
+        typer.Option("--persist/--no-persist", help="Persist results to DuckDB for API access"),
+    ] = False,
 ) -> None:
     """Extract candidates from DuckDB and verify via quant-alpha-lab.
 
@@ -96,6 +100,20 @@ def run_screening(
         typer.echo(f"\nResults saved to: {output_path}")
     else:
         typer.echo(result_json)
+
+    # Persist to DuckDB (fail-open: warning only on failure)
+    if persist:
+        try:
+            from quant_insight.storage.screening_store import ScreeningResultStore
+
+            store = ScreeningResultStore(workspace=Path(workspace))
+            store.initialize_schema()
+            store.save_batch(batch_result)
+            typer.echo(f"Results persisted to DuckDB ({len(batch_result.results)} records)")
+        except Exception as e:
+            import logging
+
+            logging.getLogger(__name__).warning(f"Failed to persist to DuckDB (non-fatal): {e}")
 
     # Summary
     typer.echo(f"\n{'=' * 40}")
