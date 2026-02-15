@@ -10,11 +10,12 @@ import polars as pl
 import typer
 
 from quant_insight.data_build.data_splitter import DataSplitter
+from quant_insight.data_build.execution_analyzer import ExecutionAnalyzer
 from quant_insight.data_build.jquants import JQuantsAdapter, JQuantsPlan, JQuantsUniverse
 from quant_insight.data_build.jquants.adapter import get_default_date_range
 from quant_insight.data_build.return_builder import ReturnBuilder
 from quant_insight.utils.config import load_competition_config
-from quant_insight.utils.env import get_data_inputs_dir, get_raw_data_dir
+from quant_insight.utils.env import get_data_inputs_dir, get_raw_data_dir, get_workspace
 
 data_app = typer.Typer(
     name="data",
@@ -247,4 +248,113 @@ def split_data(
         typer.echo(f"  {name}: train={len(train)}, valid={len(valid)}, test={len(test)}")
 
     typer.echo(f"\nData split saved to: {data_inputs_dir}")
+    typer.echo("\nDone!")
+
+
+@data_app.command("analyze-execution")
+def analyze_execution(
+    config_path: Annotated[
+        Path | None,
+        typer.Option("--config", "-c", help="Path to competition.toml (optional, for metadata display)"),
+    ] = None,
+    method: Annotated[
+        str,
+        typer.Option(help="Limit order method: daytrade_open_limit or daytrade_intraday_limit"),
+    ] = "daytrade_open_limit",
+    position_side: Annotated[
+        str,
+        typer.Option(help="Position side: long or short"),
+    ] = "long",
+    limit_offset_pct: Annotated[
+        float,
+        typer.Option(help="Limit price offset percentage (e.g., 1.0 = 1%%)"),
+    ] = 1.0,
+) -> None:
+    """Analyze limit order execution conditions (independent of MixSeek evaluation).
+
+    Uses OHLCV data from MIXSEEK_WORKSPACE/data/inputs/raw/ohlcv.parquet.
+    --config is optional: only used to display return_definition metadata in logs.
+
+    Example:
+        quant-insight data analyze-execution --method daytrade_open_limit --position-side long
+    """
+    # Validate inputs
+    valid_methods = {"daytrade_open_limit", "daytrade_intraday_limit"}
+    if method not in valid_methods:
+        typer.echo(f"Error: Invalid method '{method}'. Must be one of {sorted(valid_methods)}", err=True)
+        raise typer.Exit(1)
+
+    valid_sides = {"long", "short"}
+    if position_side not in valid_sides:
+        typer.echo(f"Error: Invalid position_side '{position_side}'. Must be one of {sorted(valid_sides)}", err=True)
+        raise typer.Exit(1)
+
+    if limit_offset_pct < 0:
+        typer.echo(f"Error: limit_offset_pct must be >= 0, got {limit_offset_pct}", err=True)
+        raise typer.Exit(1)
+
+    # Optional: display config metadata
+    if config_path is not None:
+        config = load_competition_config(config_path)
+        if config is None:
+            typer.echo(f"Error: Failed to load config from {config_path}", err=True)
+            raise typer.Exit(1)
+        typer.echo(f"Config: {config_path}")
+        rd = config.return_definition
+        typer.echo(f"  Return definition: window={rd.window}, method={rd.method}")
+
+    typer.echo("Analyzing execution conditions...")
+    typer.echo(f"  Method: {method}")
+    typer.echo(f"  Position side: {position_side}")
+    typer.echo(f"  Limit offset: {limit_offset_pct}%")
+
+    # Load OHLCV data
+    raw_dir = get_raw_data_dir()
+    ohlcv_path = raw_dir / "ohlcv.parquet"
+
+    if not ohlcv_path.exists():
+        typer.echo(f"Error: OHLCV data not found at {ohlcv_path}", err=True)
+        typer.echo("Run 'quant-insight data fetch-jquants' first.", err=True)
+        raise typer.Exit(1)
+
+    ohlcv = pl.read_parquet(ohlcv_path)
+    typer.echo(f"  Loaded OHLCV: {len(ohlcv)} rows")
+
+    # Analyze execution
+    analyzer = ExecutionAnalyzer()
+    result = analyzer.analyze(
+        ohlcv,
+        method=method,
+        position_side=position_side,
+        limit_offset_pct=limit_offset_pct,
+    )
+
+    # Display results
+    typer.echo("\nExecution Analysis Results:")
+    typer.echo(f"  Execution rate: {result.execution_rate:.4f} ({result.execution_rate * 100:.2f}%)")
+    typer.echo(f"  Total rows: {len(result.data)}")
+
+    executed_data = result.data.filter(pl.col("is_executed"))
+    typer.echo(f"  Executed rows: {len(executed_data)}")
+
+    if len(executed_data) > 0:
+        limit_returns = executed_data["limit_return"].drop_nulls()
+        if len(limit_returns) > 0:
+            raw_mean = limit_returns.mean()
+            raw_std = limit_returns.std()
+            if raw_mean is not None and isinstance(raw_mean, (int, float)):
+                typer.echo(f"  Mean limit return: {raw_mean:.6f}")
+            if raw_std is not None and isinstance(raw_std, (int, float)):
+                typer.echo(f"  Std limit return: {raw_std:.6f}")
+
+    # Save result to reports directory
+    workspace = get_workspace()
+    reports_dir = workspace / "reports"
+    reports_dir.mkdir(parents=True, exist_ok=True)
+
+    output_filename = f"execution_analysis_{method}_{position_side}_{limit_offset_pct}pct.parquet"
+    output_path = reports_dir / output_filename
+    result.data.write_parquet(output_path)
+
+    typer.echo(f"\nResult saved to: {output_path}")
     typer.echo("\nDone!")

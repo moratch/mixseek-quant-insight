@@ -27,6 +27,20 @@ class TestReturnDefinitionValidation:
         assert rd.window == 3
         assert rd.method == "open2close"
 
+    def test_valid_daytrade_market(self) -> None:
+        """Test valid daytrade_market method."""
+        rd = ReturnDefinition(window=1, method="daytrade_market")
+        assert rd.window == 1
+        assert rd.method == "daytrade_market"
+
+    def test_daytrade_window_must_be_1(self) -> None:
+        """Test daytrade_market requires window==1."""
+        with pytest.raises(ValidationError, match="daytrade_market requires window=1"):
+            ReturnDefinition(window=5, method="daytrade_market")
+
+        with pytest.raises(ValidationError, match="daytrade_market requires window=1"):
+            ReturnDefinition(window=2, method="daytrade_market")
+
     def test_window_must_be_positive(self) -> None:
         """Test window must be >= 1."""
         with pytest.raises(ValidationError) as exc_info:
@@ -56,6 +70,12 @@ class TestReturnDefinitionSerialization:
         rd = ReturnDefinition(window=7, method="open2close")
         data = rd.model_dump()
         assert data == {"window": 7, "method": "open2close"}
+
+    def test_model_dump_daytrade(self) -> None:
+        """Test model_dump with daytrade_market method."""
+        rd = ReturnDefinition(window=1, method="daytrade_market")
+        data = rd.model_dump()
+        assert data == {"window": 1, "method": "daytrade_market"}
 
     def test_model_dump_json(self) -> None:
         """Test model_dump_json returns valid JSON."""

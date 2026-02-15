@@ -81,3 +81,37 @@ class TestConfigLoading:
         assert config2.name == config1.name
         assert config2.data_split.train_end == config1.data_split.train_end
         assert config2.return_definition.window == config1.return_definition.window
+
+    def test_competition_config_daytrade(self, tmp_path: Path) -> None:
+        """Test loading daytrade_market + window=1 from TOML."""
+        toml_content = """\
+[competition]
+name = "daytrade-test"
+description = "Day-trade competition"
+
+[[competition.data]]
+name = "ohlcv"
+datetime_column = "datetime"
+
+[[competition.data]]
+name = "returns"
+datetime_column = "datetime"
+
+[competition.data_split]
+train_end = "2024-12-31T23:59:59"
+valid_end = "2025-06-30T23:59:59"
+purge_rows = 1
+
+[competition.return_definition]
+method = "daytrade_market"
+window = 1
+"""
+        toml_file = tmp_path / "competition_daytrade.toml"
+        toml_file.write_text(toml_content, encoding="utf-8")
+
+        with open(toml_file, "rb") as f:
+            config_dict = tomllib.load(f)
+
+        config = CompetitionConfig(**config_dict["competition"])
+        assert config.return_definition.method == "daytrade_market"
+        assert config.return_definition.window == 1

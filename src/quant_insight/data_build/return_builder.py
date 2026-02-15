@@ -33,6 +33,8 @@ class ReturnBuilder:
                 - "open2close": 翌openからwindow期間後のcloseまでのリターン
                   window=1: 翌営業日のopen→翌営業日のclose
                   window=2: 翌営業日のopen→翌々営業日のclose
+                - "daytrade_market": 翌日の日中リターン (open[t+1] → close[t+1])
+                  window=1のみ。全銘柄のmarket return（選択バイアスなし）
 
         Returns:
             pl.DataFrame: 以下のカラムを持つDataFrame
@@ -41,7 +43,7 @@ class ReturnBuilder:
                 - return_value: float型（未来の実現リターン）
 
         Raises:
-            ValueError: 不正なmethod指定時
+            ValueError: 不正なmethod指定時、またはdaytrade_marketでwindow≠1
 
         Note:
             バックテストでは、各datetimeにエントリーした場合の未来の実現リターンを計算する。
@@ -55,7 +57,18 @@ class ReturnBuilder:
             - open2close: 翌日(t+1)のopen価格でエントリーを前提。
               より現実的な取引シミュレーション。シグナルは前日closeまでの情報で
               生成され、翌日の寄付きで約定する想定。
+
+            daytrade_market:
+            - 翌日の日中リターン: (close[t+1] - open[t+1]) / open[t+1]
+            - open2close(window=1)と数値的に同値だが、意図を明示するために分離
+            - 全銘柄の market return を計算（選択バイアスなし）
+            - 境界NaN: 最終行は翌日データなし（全銘柄一律、close2closeと同じ挙動）
         """
+        # daytrade_market は window==1 を強制（ReturnDefinition 経由しない直接呼び出し経路の保護）
+        if method == "daytrade_market" and window != 1:
+            msg = f"daytrade_market requires window=1, got {window}"
+            raise ValueError(msg)
+
         # データをdatetime, symbolでソート（shift操作の前提）
         ohlcv_sorted = ohlcv.sort(["symbol", "datetime"])
 
@@ -76,6 +89,20 @@ class ReturnBuilder:
                 )
                 .with_columns(
                     ((pl.col("future_close") - pl.col("next_open")) / pl.col("next_open")).alias("return_value")
+                )
+                .select(["datetime", "symbol", "return_value"])
+            )
+        elif method == "daytrade_market":
+            # daytrade_market: 翌日の日中リターン (close[t+1] - open[t+1]) / open[t+1]
+            # 全銘柄の market return（選択バイアスなし）
+            # 境界NaN: 最終行は翌日データなし（全銘柄一律）
+            return (
+                ohlcv_sorted.with_columns(
+                    next_open=pl.col("open").shift(-1).over("symbol"),
+                    next_close=pl.col("close").shift(-1).over("symbol"),
+                )
+                .with_columns(
+                    ((pl.col("next_close") - pl.col("next_open")) / pl.col("next_open")).alias("return_value")
                 )
                 .select(["datetime", "symbol", "return_value"])
             )

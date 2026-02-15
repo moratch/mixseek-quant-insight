@@ -216,3 +216,89 @@ class TestReturnBuilder:
         # 5日目: 2日後がないのでNaN
         fifth_return = result.filter(pl.col("datetime") == datetime(2023, 1, 5, tzinfo=UTC))["return_value"][0]
         assert fifth_return is None or fifth_return != fifth_return
+
+    def test_daytrade_market(self, sample_ohlcv: pl.DataFrame) -> None:
+        """daytrade_market method: 翌日の日中リターン (open[t+1] → close[t+1]).
+
+        翌日の日中リターン = (close[t+1] - open[t+1]) / open[t+1]
+        1/1: (close[1/2] - open[1/2]) / open[1/2] = (103 - 102) / 102
+        1/2: (close[1/3] - open[1/3]) / open[1/3] = (102 - 101) / 101
+        1/3: (close[1/4] - open[1/4]) / open[1/4] = (104 - 103) / 103
+        1/4: (close[1/5] - open[1/5]) / open[1/5] = (105 - 104) / 104
+        1/5: NaN (翌日がない)
+        """
+        builder = ReturnBuilder()
+        result = builder.calculate_returns(sample_ohlcv, window=1, method="daytrade_market")
+
+        assert isinstance(result, pl.DataFrame)
+        assert set(result.columns) == {"datetime", "symbol", "return_value"}
+        assert len(result) == 5
+
+        # 1日目: 翌日の日中リターン = (103 - 102) / 102
+        first_return = result.filter(pl.col("datetime") == datetime(2023, 1, 1, tzinfo=UTC))["return_value"][0]
+        assert first_return == pytest.approx((103.0 - 102.0) / 102.0, rel=1e-4)
+
+        # 2日目: 翌日の日中リターン = (102 - 101) / 101
+        second_return = result.filter(pl.col("datetime") == datetime(2023, 1, 2, tzinfo=UTC))["return_value"][0]
+        assert second_return == pytest.approx((102.0 - 101.0) / 101.0, rel=1e-4)
+
+        # 4日目: 翌日の日中リターン = (105 - 104) / 104
+        fourth_return = result.filter(pl.col("datetime") == datetime(2023, 1, 4, tzinfo=UTC))["return_value"][0]
+        assert fourth_return == pytest.approx((105.0 - 104.0) / 104.0, rel=1e-4)
+
+        # 5日目: 翌日がないのでNaN（境界NaN）
+        last_return = result.filter(pl.col("datetime") == datetime(2023, 1, 5, tzinfo=UTC))["return_value"][0]
+        assert last_return is None or last_return != last_return  # NaN check
+
+    def test_daytrade_market_boundary_nan(self, sample_ohlcv: pl.DataFrame) -> None:
+        """daytrade_market boundary NaN: 最終行のみNaN（全銘柄一律、close2closeと同じ挙動）."""
+        builder = ReturnBuilder()
+        result = builder.calculate_returns(sample_ohlcv, window=1, method="daytrade_market")
+
+        # 最終行以外はNaNでない
+        non_last = result.filter(pl.col("datetime") != datetime(2023, 1, 5, tzinfo=UTC))
+        assert non_last["return_value"].null_count() == 0
+
+        # 最終行はNaN
+        last = result.filter(pl.col("datetime") == datetime(2023, 1, 5, tzinfo=UTC))
+        assert last["return_value"].null_count() == 1
+
+    def test_daytrade_multiple_symbols(self, multi_symbol_ohlcv: pl.DataFrame) -> None:
+        """daytrade_market: 複数銘柄でsymbol独立計算.
+
+        AAPL 1/1: (close[1/2] - open[1/2]) / open[1/2] = (103 - 102) / 102
+        GOOGL 1/1: (close[1/2] - open[1/2]) / open[1/2] = (205 - 204) / 204
+        """
+        builder = ReturnBuilder()
+        result = builder.calculate_returns(multi_symbol_ohlcv, window=1, method="daytrade_market")
+
+        assert len(result) == 6
+
+        # AAPL 1/1: (103 - 102) / 102
+        aapl_day1 = result.filter(
+            (pl.col("symbol") == "AAPL") & (pl.col("datetime") == datetime(2023, 1, 1, tzinfo=UTC))
+        )["return_value"][0]
+        assert aapl_day1 == pytest.approx((103.0 - 102.0) / 102.0, rel=1e-4)
+
+        # GOOGL 1/1: (205 - 204) / 204
+        googl_day1 = result.filter(
+            (pl.col("symbol") == "GOOGL") & (pl.col("datetime") == datetime(2023, 1, 1, tzinfo=UTC))
+        )["return_value"][0]
+        assert googl_day1 == pytest.approx((205.0 - 204.0) / 204.0, rel=1e-4)
+
+        # 各銘柄の最終行はNaN
+        aapl_last = result.filter(
+            (pl.col("symbol") == "AAPL") & (pl.col("datetime") == datetime(2023, 1, 3, tzinfo=UTC))
+        )["return_value"][0]
+        assert aapl_last is None or aapl_last != aapl_last
+
+        googl_last = result.filter(
+            (pl.col("symbol") == "GOOGL") & (pl.col("datetime") == datetime(2023, 1, 3, tzinfo=UTC))
+        )["return_value"][0]
+        assert googl_last is None or googl_last != googl_last
+
+    def test_daytrade_market_window_guard(self, sample_ohlcv: pl.DataFrame) -> None:
+        """daytrade_market with window≠1 raises ValueError（直接呼び出し経路の回帰テスト）."""
+        builder = ReturnBuilder()
+        with pytest.raises(ValueError, match="daytrade_market requires window=1"):
+            builder.calculate_returns(sample_ohlcv, method="daytrade_market", window=5)
