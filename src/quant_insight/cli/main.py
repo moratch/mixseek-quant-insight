@@ -6,7 +6,7 @@ import typer
 from mixseek.cli.commands.init import init as mixseek_init
 
 from quant_insight import __version__
-from quant_insight.cli.commands import config_app, data_app, db_app, export_app, screening_app
+from quant_insight.cli.commands import config_app, data_app, db_app, export_app, screening_app, signal_app
 from quant_insight.cli.commands.config import install_sample_configs
 from quant_insight.storage import ImplementationStore
 from quant_insight.utils.env import get_workspace
@@ -22,6 +22,7 @@ app.add_typer(data_app, name="data")
 app.add_typer(db_app, name="db")
 app.add_typer(export_app, name="export")
 app.add_typer(screening_app, name="screening")
+app.add_typer(signal_app, name="signal")
 
 # api は optional - fastapi/uvicorn 未導入でも CLI は起動可能
 try:
