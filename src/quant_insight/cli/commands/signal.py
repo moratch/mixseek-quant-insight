@@ -115,6 +115,112 @@ def generate_signal(
         )
 
 
+@signal_app.command("swing")
+def swing_signal(
+    workspace: Annotated[
+        str,
+        typer.Option(
+            "--workspace",
+            "-w",
+            envvar="MIXSEEK_WORKSPACE",
+            help="Workspace path (or set MIXSEEK_WORKSPACE env var)",
+        ),
+    ],
+    date: Annotated[
+        str | None,
+        typer.Option("--date", "-d", help="Target date (YYYY-MM-DD). Default: latest available"),
+    ] = None,
+    strategy: Annotated[
+        str,
+        typer.Option("--strategy", "-s", help="Validated strategy name"),
+    ] = "I5_cp_gap3d",
+    top_n: Annotated[
+        int,
+        typer.Option("--top-n", "-n", help="Number of top long/short positions to output"),
+    ] = 50,
+    output: Annotated[
+        str | None,
+        typer.Option("--output", "-o", help="Output JSON path (default: auto-save to workspace/reports/signals/)"),
+    ] = None,
+    verbose: Annotated[
+        bool,
+        typer.Option("--verbose", "-v", help="Enable verbose logging"),
+    ] = False,
+) -> None:
+    """Generate swing trading signals from validated strategies.
+
+    Runs the validated I5_cp_gap3d strategy (the only one passing WFA/CPCV
+    at all return horizons) and outputs actionable long/short positions.
+    Designed for 10-day holding period swing trading.
+
+    Examples:
+        quant-insight signal swing
+        quant-insight signal swing --date 2025-12-26
+        quant-insight signal swing --top-n 30 -o positions.json
+    """
+    logging.basicConfig(
+        level=logging.INFO if verbose else logging.WARNING,
+        format="%(asctime)s - %(levelname)s - %(message)s",
+    )
+
+    from quant_insight.pipeline.production import ProductionConfig, ProductionPipeline
+
+    ws = Path(workspace)
+    config = ProductionConfig(
+        workspace=ws,
+        strategy_name=strategy,
+        top_n=top_n,
+    )
+
+    pipeline = ProductionPipeline(config)
+    typer.echo(f"Loading data and generating {strategy} signals...")
+    result = pipeline.run(date=date)
+
+    if not result.signals:
+        typer.echo("No signals generated (date not found in data).", err=True)
+        raise typer.Exit(1)
+
+    # Display summary
+    for sig in result.signals:
+        typer.echo(f"\n{'=' * 60}")
+        typer.echo(f"Date: {sig.date}  Strategy: {sig.strategy}")
+        typer.echo(f"Universe: {sig.n_universe}  Long: {sig.n_long}  Short: {sig.n_short}")
+        typer.echo(f"{'=' * 60}")
+
+        typer.echo(f"\n  Top {min(top_n, sig.n_long)} LONG:")
+        typer.echo(f"  {'Symbol':<10} {'Signal':>10} {'PctRank':>10}")
+        typer.echo(f"  {'-' * 32}")
+        for p in sig.long_positions[:top_n]:
+            typer.echo(f"  {p.symbol:<10} {p.signal:>10.4f} {p.pct_rank:>10.4f}")
+
+        typer.echo(f"\n  Top {min(top_n, sig.n_short)} SHORT:")
+        typer.echo(f"  {'Symbol':<10} {'Signal':>10} {'PctRank':>10}")
+        typer.echo(f"  {'-' * 32}")
+        for p in sig.short_positions[:top_n]:
+            typer.echo(f"  {p.symbol:<10} {p.signal:>10.4f} {p.pct_rank:>10.4f}")
+
+    # Save
+    if output:
+        out_path = Path(output)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        from quant_insight.pipeline.production import _daily_signal_to_dict
+
+        data = {
+            "generated_at": result.generated_at,
+            "data_range": result.data_range,
+            "config": result.config,
+            "signals": [_daily_signal_to_dict(s) for s in result.signals],
+        }
+        out_path.write_text(
+            json.dumps(data, ensure_ascii=False, indent=2, default=str),
+            encoding="utf-8",
+        )
+        typer.echo(f"\nSaved to {out_path}")
+    else:
+        saved_path = pipeline.save_result(result)
+        typer.echo(f"\nSaved to {saved_path}")
+
+
 @signal_app.command("cost-analysis")
 def cost_analysis(
     workspace: Annotated[
