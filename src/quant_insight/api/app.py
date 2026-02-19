@@ -26,7 +26,8 @@ def create_app(workspace: Path) -> FastAPI:
         description="Statistical screening results for MixSeek signal functions",
     )
 
-    # Initialize screening store and attach to app state
+    # Attach workspace path and screening store to app state
+    app.state.workspace = workspace
     store = ScreeningResultStore(workspace=workspace)
     app.state.screening_store = store
 

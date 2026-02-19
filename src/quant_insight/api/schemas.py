@@ -117,6 +117,19 @@ class EnsembleResultResponse(BaseModel):
     correlation_matrix: dict[str, dict[str, float]]
 
 
+class EnsembleOverviewResponse(BaseModel):
+    """Full ensemble overview including regime analysis."""
+
+    ensemble: EnsembleResultResponse
+    individual_sharpe: dict[str, float]
+    regime_sharpe: dict[str, float] | None = None
+    annual_sharpe: dict[str, float] | None = None
+    quarterly_sharpe: dict[str, float] | None = None
+    monthly_win_rate: float | None = None
+    max_drawdown_date: str | None = None
+    contribution: dict[str, float] | None = None
+
+
 # ---------------------------------------------------------------------------
 # Conversion functions (dataclass -> Pydantic)
 # ---------------------------------------------------------------------------
