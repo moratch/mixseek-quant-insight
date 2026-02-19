@@ -49,6 +49,14 @@ def run_screening(
         ThresholdMethod,
         typer.Option("--threshold-method", help="Signal discretization: quantile / fixed / zero"),
     ] = ThresholdMethod.QUANTILE,
+    long_quantile: Annotated[
+        float,
+        typer.Option("--long-quantile", help="Quantile threshold for long signals (default: 0.9)"),
+    ] = 0.9,
+    short_quantile: Annotated[
+        float,
+        typer.Option("--short-quantile", help="Quantile threshold for short signals (default: 0.1)"),
+    ] = 0.1,
     output: Annotated[
         str | None,
         typer.Option("--output", "-o", help="Output JSON path (default: stdout)"),
@@ -57,6 +65,40 @@ def run_screening(
         bool,
         typer.Option("--persist/--no-persist", help="Persist results to DuckDB for API access"),
     ] = False,
+    # Screening criteria overrides
+    min_oos_sharpe: Annotated[
+        float,
+        typer.Option("--min-oos-sharpe", help="Minimum OOS Sharpe ratio (default: 0.3)"),
+    ] = 0.3,
+    min_wfe: Annotated[
+        float,
+        typer.Option("--min-wfe", help="Minimum Walk-Forward Efficiency (default: 0.5)"),
+    ] = 0.5,
+    min_consistency: Annotated[
+        float,
+        typer.Option("--min-consistency", help="Minimum consistency score (default: 0.6)"),
+    ] = 0.6,
+    max_pbo: Annotated[
+        float,
+        typer.Option("--max-pbo", help="Maximum PBO (default: 0.4)"),
+    ] = 0.4,
+    min_dsr: Annotated[
+        float,
+        typer.Option("--min-dsr", help="Minimum Deflated Sharpe Ratio (default: 0.2)"),
+    ] = 0.2,
+    min_degradation_pvalue: Annotated[
+        float,
+        typer.Option("--min-degradation-pvalue", help="Minimum degradation p-value (default: 0.05)"),
+    ] = 0.05,
+    # CPCV / WFA settings
+    cpcv_n_splits: Annotated[
+        int,
+        typer.Option("--cpcv-n-splits", help="CPCV number of splits (default: 6, try 10 for finer PBO)"),
+    ] = 6,
+    cpcv_n_test_groups: Annotated[
+        int,
+        typer.Option("--cpcv-n-test-groups", help="CPCV test groups (default: 2)"),
+    ] = 2,
 ) -> None:
     """Extract candidates from DuckDB and verify via quant-alpha-lab.
 
@@ -71,6 +113,16 @@ def run_screening(
     config = ScreeningConfig(
         workspace=Path(workspace),
         threshold_method=threshold_method,
+        long_quantile=long_quantile,
+        short_quantile=short_quantile,
+        cpcv_n_splits=cpcv_n_splits,
+        cpcv_n_test_groups=cpcv_n_test_groups,
+        min_oos_sharpe=min_oos_sharpe,
+        min_wfe=min_wfe,
+        min_consistency=min_consistency,
+        max_pbo=max_pbo,
+        min_dsr=min_dsr,
+        min_degradation_pvalue=min_degradation_pvalue,
     )
     pipeline = ScreeningPipeline(config)
 
