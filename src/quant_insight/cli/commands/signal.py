@@ -38,6 +38,10 @@ def generate_signal(
         str | None,
         typer.Option("--output", "-o", help="Output JSON path (default: stdout)"),
     ] = None,
+    rebalance_days: Annotated[
+        int,
+        typer.Option("--rebalance-days", "-r", help="Rebalance every N trading days (1=daily, 5=weekly)"),
+    ] = 1,
     verbose: Annotated[
         bool,
         typer.Option("--verbose", "-v", help="Enable verbose logging"),
@@ -51,7 +55,7 @@ def generate_signal(
     Examples:
         quant-insight signal generate --date 2025-12-30
         quant-insight signal generate --date 2025-12-30 --top-n 20 -o signals.json
-        quant-insight signal generate  # latest date
+        quant-insight signal generate --rebalance-days 5  # weekly rebalance
     """
     logging.basicConfig(
         level=logging.INFO if verbose else logging.WARNING,
@@ -66,12 +70,11 @@ def generate_signal(
     gen.load_data()
 
     if date is None:
-        # Use the latest available date
-        typer.echo("Generating signals for latest date...")
+        typer.echo(f"Generating signals for latest date (rebalance every {rebalance_days}d)...")
     else:
-        typer.echo(f"Generating signals for {date}...")
+        typer.echo(f"Generating signals for {date} (rebalance every {rebalance_days}d)...")
 
-    outputs = gen.generate(date=date, top_n=top_n)
+    outputs = gen.generate(date=date, top_n=top_n, rebalance_days=rebalance_days)
 
     if not outputs:
         typer.echo("No signals generated (date not found in data).", err=True)
@@ -123,6 +126,10 @@ def cost_analysis(
             help="Workspace path (or set MIXSEEK_WORKSPACE env var)",
         ),
     ],
+    rebalance_days: Annotated[
+        int,
+        typer.Option("--rebalance-days", "-r", help="Rebalance every N trading days (1=daily, 5=weekly)"),
+    ] = 1,
     output: Annotated[
         str | None,
         typer.Option("--output", "-o", help="Output JSON path (default: stdout)"),
@@ -139,7 +146,7 @@ def cost_analysis(
 
     Examples:
         quant-insight signal cost-analysis
-        quant-insight signal cost-analysis -o cost_report.json -v
+        quant-insight signal cost-analysis --rebalance-days 5 -o cost_report.json -v
     """
     logging.basicConfig(
         level=logging.INFO if verbose else logging.WARNING,
@@ -155,42 +162,20 @@ def cost_analysis(
     from quant_insight.signal.generator import EnsembleSignalGenerator
 
     ws = Path(workspace)
-    typer.echo("Loading data and generating signals across all dates...")
+    typer.echo(f"Loading data and generating signals (rebalance every {rebalance_days}d)...")
 
     gen = EnsembleSignalGenerator(workspace=ws)
     gen.load_data()
 
-    # Generate ensemble signals for all dates (needed for turnover)
-    all_outputs = gen.generate()
-    if not all_outputs:
-        typer.echo("No signals generated.", err=True)
-        raise typer.Exit(1)
+    # Build combined ensemble signals
+    combined = gen._build_combined()
 
-    typer.echo(f"Generated signals for {len(all_outputs)} dates")
+    # Apply rebalance schedule if > 1 day
+    if rebalance_days > 1:
+        combined = EnsembleSignalGenerator._apply_rebalance_schedule(combined, rebalance_days)
 
-    # Reconstruct full ensemble positions DataFrame
-    # Re-run internal logic to get combined positions
-    all_positions: dict[str, pl.DataFrame] = {}
-    for spec in gen.strategies:
-        all_positions[spec.name] = gen._generate_strategy_signals(spec)
-
-    # Build combined ensemble signal per (datetime, symbol)
-    all_pairs: list[pl.DataFrame] = []
-    for df in all_positions.values():
-        all_pairs.append(df.select(["datetime", "symbol"]))
-    combined = pl.concat(all_pairs).unique(subset=["datetime", "symbol"])
-    combined = combined.with_columns(pl.lit(0.0).alias("ensemble_signal"))
-    for spec in gen.strategies:
-        strat_df = all_positions[spec.name].select(
-            ["datetime", "symbol", pl.col("position").alias(f"pos_{spec.name}")]
-        )
-        combined = combined.join(strat_df, on=["datetime", "symbol"], how="left")
-        combined = combined.with_columns(
-            (pl.col("ensemble_signal") + pl.col(f"pos_{spec.name}").fill_null(0) * spec.weight).alias(
-                "ensemble_signal"
-            )
-        )
-        combined = combined.drop(f"pos_{spec.name}")
+    n_dates = combined.select("datetime").unique().height
+    typer.echo(f"Built signals for {n_dates} dates")
 
     # Calculate turnover
     turnover = calculate_turnover(combined)

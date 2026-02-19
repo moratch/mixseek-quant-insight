@@ -172,17 +172,15 @@ class EnsembleSignalGenerator:
         self._ohlcv = pl.read_parquet(raw_dir / "ohlcv.parquet")
 
         self._additional_data = {}
-        master_path = raw_dir / "master.parquet"
-        if master_path.exists():
-            self._additional_data["master"] = pl.read_parquet(master_path)
-        indicators_path = raw_dir / "indicators.parquet"
-        if indicators_path.exists():
-            self._additional_data["indicators"] = pl.read_parquet(indicators_path)
+        for name in ("master", "indicators", "fundamental", "margin"):
+            path = raw_dir / f"{name}.parquet"
+            if path.exists():
+                self._additional_data[name] = pl.read_parquet(path)
 
         logger.info(
-            "Data loaded: OHLCV=%d rows, indicators=%s",
+            "Data loaded: OHLCV=%d rows, additional=%s",
             len(self._ohlcv),
-            "loaded" if "indicators" in self._additional_data else "not found",
+            list(self._additional_data.keys()),
         )
 
     def _generate_strategy_signals(self, spec: StrategySpec) -> pl.DataFrame:
@@ -221,43 +219,23 @@ class EnsembleSignalGenerator:
 
         return sig_df.select(["datetime", "symbol", "signal", "position"])
 
-    def generate(
-        self,
-        date: str | None = None,
-        top_n: int = 50,
-    ) -> list[SignalOutput]:
-        """Generate ensemble signals.
-
-        Args:
-            date: Specific date (YYYY-MM-DD) or None for all dates.
-            top_n: Number of top positions to include in output.
+    def _build_combined(self) -> pl.DataFrame:
+        """Build combined ensemble signal DataFrame across all strategies.
 
         Returns:
-            List of SignalOutput per date.
+            DataFrame with columns: datetime, symbol, ensemble_signal.
         """
         if self._ohlcv is None:
             self.load_data()
 
-        # Generate signals for all strategies
         all_positions: dict[str, pl.DataFrame] = {}
         for spec in self.strategies:
             logger.info("Generating signals for %s (weight=%.1f%%)...", spec.name, spec.weight * 100)
             all_positions[spec.name] = self._generate_strategy_signals(spec)
 
-        # Combine: weighted sum of positions
-        # Start with first strategy
-        first_name = self.strategies[0].name
-        combined = (
-            all_positions[first_name]
-            .select(["datetime", "symbol"])
-            .with_columns(
-                (pl.col("symbol").cast(pl.Utf8)).alias("symbol")  # ensure string type
-            )
-        )
-
-        # Re-select to get unique datetime/symbol pairs across all strategies
+        # Collect unique datetime/symbol pairs
         all_pairs: list[pl.DataFrame] = []
-        for name, df in all_positions.items():
+        for df in all_positions.values():
             all_pairs.append(df.select(["datetime", "symbol"]))
         combined = pl.concat(all_pairs).unique(subset=["datetime", "symbol"])
 
@@ -275,6 +253,27 @@ class EnsembleSignalGenerator:
             )
             combined = combined.drop(f"pos_{spec.name}")
 
+        return combined
+
+    def generate(
+        self,
+        date: str | None = None,
+        top_n: int = 50,
+        rebalance_days: int = 1,
+    ) -> list[SignalOutput]:
+        """Generate ensemble signals.
+
+        Args:
+            date: Specific date (YYYY-MM-DD) or None for all dates.
+            top_n: Number of top positions to include in output.
+            rebalance_days: Rebalance every N trading days.
+                1 = daily (default), 5 = weekly, 10 = biweekly.
+
+        Returns:
+            List of SignalOutput per date.
+        """
+        combined = self._build_combined()
+
         # Filter by date if specified
         if date is not None:
             combined = combined.filter(pl.col("datetime").cast(pl.Utf8).str.starts_with(date))
@@ -282,6 +281,10 @@ class EnsembleSignalGenerator:
         if len(combined) == 0:
             logger.warning("No data found for date=%s", date)
             return []
+
+        # Apply rebalance frequency: carry forward positions on non-rebalance days
+        if rebalance_days > 1:
+            combined = self._apply_rebalance_schedule(combined, rebalance_days)
 
         # Group by date and produce output
         dates = combined.select("datetime").unique().sort("datetime")
@@ -321,6 +324,46 @@ class EnsembleSignalGenerator:
             )
 
         return outputs
+
+    @staticmethod
+    def _apply_rebalance_schedule(combined: pl.DataFrame, rebalance_days: int) -> pl.DataFrame:
+        """Carry forward positions on non-rebalance days to reduce turnover.
+
+        On rebalance days (every N-th trading day), use fresh signals.
+        On other days, carry forward the previous rebalance day's signals.
+        """
+        dates = combined.select("datetime").unique().sort("datetime").to_series().to_list()
+        rebalance_dates = set(dates[::rebalance_days])
+
+        logger.info(
+            "Rebalance schedule: %d rebalance days out of %d total (every %d days)",
+            len(rebalance_dates),
+            len(dates),
+            rebalance_days,
+        )
+
+        # Mark rebalance dates
+        combined = combined.with_columns(
+            pl.col("datetime").is_in(rebalance_dates).alias("is_rebalance")
+        )
+
+        # For non-rebalance dates, carry forward from previous rebalance date
+        combined = combined.sort(["symbol", "datetime"])
+        combined = combined.with_columns(
+            pl.when(pl.col("is_rebalance"))
+            .then(pl.col("ensemble_signal"))
+            .otherwise(None)
+            .alias("rebal_signal")
+        )
+        # Forward-fill the rebalance signal per symbol
+        combined = combined.with_columns(
+            pl.col("rebal_signal").forward_fill().over("symbol").alias("held_signal")
+        )
+        # Use held signal (forward-filled from rebalance days)
+        combined = combined.with_columns(
+            pl.col("held_signal").fill_null(pl.col("ensemble_signal")).alias("ensemble_signal")
+        )
+        return combined.drop(["is_rebalance", "rebal_signal", "held_signal"])
 
 
 def load_weights_from_json(json_path: Path) -> dict[str, float]:

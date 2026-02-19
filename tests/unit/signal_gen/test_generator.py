@@ -195,6 +195,94 @@ class TestEnsembleSignalGenerator:
 
 
 # ---------------------------------------------------------------------------
+# Tests: Rebalance mechanism
+# ---------------------------------------------------------------------------
+
+
+class TestRebalanceSchedule:
+    def test_rebalance_days_1_same_as_default(
+        self, workspace: Path, simple_strategy: StrategySpec
+    ) -> None:
+        """rebalance_days=1 should produce identical results to default."""
+        gen = EnsembleSignalGenerator(workspace=workspace, strategies=[simple_strategy])
+        gen.load_data()
+        outputs_default = gen.generate()
+        outputs_rebal1 = gen.generate(rebalance_days=1)
+        assert len(outputs_default) == len(outputs_rebal1)
+        for a, b in zip(outputs_default, outputs_rebal1):
+            assert a.n_long == b.n_long
+            assert a.n_short == b.n_short
+            assert a.n_neutral == b.n_neutral
+
+    def test_rebalance_days_reduces_turnover(
+        self, workspace: Path, simple_strategy: StrategySpec
+    ) -> None:
+        """With rebalance_days>1, non-rebalance days carry forward signals."""
+        gen = EnsembleSignalGenerator(workspace=workspace, strategies=[simple_strategy])
+        gen.load_data()
+        # 3 dates in fixture. rebalance_days=2 → dates[0] and dates[2] are rebalance,
+        # date[1] carries forward from date[0]
+        outputs = gen.generate(rebalance_days=2)
+        assert len(outputs) == 3
+
+    def test_rebalance_schedule_first_date_always_rebalance(
+        self, workspace: Path, simple_strategy: StrategySpec
+    ) -> None:
+        """First date is always a rebalance date regardless of schedule."""
+        gen = EnsembleSignalGenerator(workspace=workspace, strategies=[simple_strategy])
+        gen.load_data()
+        combined_default = gen._build_combined()
+        # All dates should be present
+        n_dates = combined_default.select("datetime").unique().height
+        assert n_dates == 3
+
+    def test_apply_rebalance_schedule_static(self) -> None:
+        """Test the static _apply_rebalance_schedule method directly."""
+        # 5 dates × 2 symbols
+        dates = [f"2025-01-0{i}" for i in range(1, 6)]
+        symbols = ["A", "B"]
+        rows = []
+        for d in dates:
+            for s in symbols:
+                val = 1.0 if s == "A" else -1.0
+                # Vary signal on different dates
+                rows.append({"datetime": d, "symbol": s, "ensemble_signal": val * (1 + dates.index(d) * 0.1)})
+        df = pl.DataFrame(rows)
+
+        # rebalance_days=3 → dates[0] and dates[3] are rebalance
+        result = EnsembleSignalGenerator._apply_rebalance_schedule(df, rebalance_days=3)
+
+        assert result.height == 10  # same row count
+        assert "is_rebalance" not in result.columns  # temp columns cleaned up
+        assert "rebal_signal" not in result.columns
+        assert "held_signal" not in result.columns
+
+        # Date[0] = rebalance → use fresh signal
+        day0 = result.filter(pl.col("datetime") == "2025-01-01")
+        assert day0.filter(pl.col("symbol") == "A")["ensemble_signal"][0] == pytest.approx(1.0)
+
+        # Date[1] = non-rebalance → carry forward from date[0]
+        day1 = result.filter(pl.col("datetime") == "2025-01-02")
+        assert day1.filter(pl.col("symbol") == "A")["ensemble_signal"][0] == pytest.approx(1.0)
+
+        # Date[3] = rebalance → use fresh signal (1.0 * 1.3 = 1.3)
+        day3 = result.filter(pl.col("datetime") == "2025-01-04")
+        assert day3.filter(pl.col("symbol") == "A")["ensemble_signal"][0] == pytest.approx(1.3)
+
+    def test_build_combined_returns_dataframe(
+        self, workspace: Path, simple_strategy: StrategySpec
+    ) -> None:
+        """_build_combined should return a DataFrame with ensemble_signal column."""
+        gen = EnsembleSignalGenerator(workspace=workspace, strategies=[simple_strategy])
+        gen.load_data()
+        combined = gen._build_combined()
+        assert isinstance(combined, pl.DataFrame)
+        assert "ensemble_signal" in combined.columns
+        assert "datetime" in combined.columns
+        assert "symbol" in combined.columns
+
+
+# ---------------------------------------------------------------------------
 # Tests: load_weights_from_json
 # ---------------------------------------------------------------------------
 
