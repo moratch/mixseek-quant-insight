@@ -9,6 +9,7 @@ import pytest
 
 from quant_insight.pipeline.production import (
     DailySignal,
+    LiquidityStats,
     Position,
     ProductionConfig,
     ProductionPipeline,
@@ -29,11 +30,15 @@ def workspace(tmp_path: Path) -> Path:
     raw_dir.mkdir(parents=True)
 
     # OHLCV data (5 dates × 20 symbols)
+    # First 10 symbols have high volume (liquid), last 10 have low volume (illiquid)
     dates = ["2025-01-01", "2025-01-02", "2025-01-03", "2025-01-06", "2025-01-07"]
     symbols = [f"SYM{i:04d}" for i in range(20)]
     rows = []
     for d in dates:
         for i, s in enumerate(symbols):
+            # Liquid: volume=500000 * close~100 = 50M+ JPY turnover
+            # Illiquid: volume=100 * close~100 = 10K JPY turnover
+            vol = 500_000.0 if i < 10 else 100.0
             rows.append(
                 {
                     "datetime": d,
@@ -42,7 +47,7 @@ def workspace(tmp_path: Path) -> Path:
                     "high": 105.0 + i,
                     "low": 95.0 + i,
                     "close": 102.0 + i * (1 if d != "2025-01-03" else -1),
-                    "volume": 1000.0 * (i + 1),
+                    "volume": vol,
                 }
             )
 
@@ -56,11 +61,12 @@ def workspace(tmp_path: Path) -> Path:
 
 @pytest.fixture()
 def config(workspace: Path) -> ProductionConfig:
-    """Create a production config with test workspace."""
+    """Create a production config with test workspace (no liquidity filter)."""
     return ProductionConfig(
         workspace=workspace,
         strategy_name="I5_cp_gap3d",
         top_n=5,
+        min_avg_turnover_yen=0,  # disable for basic tests
     )
 
 
@@ -189,6 +195,59 @@ class TestSaveResult:
 # ---------------------------------------------------------------------------
 # Tests: Helper functions
 # ---------------------------------------------------------------------------
+
+
+class TestLiquidityFilter:
+    def test_filter_reduces_universe(self, workspace: Path) -> None:
+        config = ProductionConfig(
+            workspace=workspace,
+            strategy_name="I5_cp_gap3d",
+            top_n=5,
+            min_avg_turnover_yen=1e6,  # 1M JPY - should exclude low-volume symbols
+        )
+        pipeline = ProductionPipeline(config)
+        result = pipeline.run()
+        assert len(result.signals) == 1
+        # With filter, universe should be smaller than 20
+        assert result.signals[0].n_universe < 20
+        assert result.signals[0].n_universe == 10  # only liquid symbols pass
+
+    def test_no_filter_keeps_all(self, workspace: Path) -> None:
+        config = ProductionConfig(
+            workspace=workspace,
+            strategy_name="I5_cp_gap3d",
+            top_n=5,
+            min_avg_turnover_yen=0,  # disabled
+        )
+        pipeline = ProductionPipeline(config)
+        result = pipeline.run()
+        assert result.signals[0].n_universe == 20
+
+    def test_liquidity_stats_in_result(self, workspace: Path) -> None:
+        config = ProductionConfig(
+            workspace=workspace,
+            strategy_name="I5_cp_gap3d",
+            top_n=5,
+            min_avg_turnover_yen=1e6,
+        )
+        pipeline = ProductionPipeline(config)
+        result = pipeline.run()
+        liq = result.config.get("liquidity")
+        assert liq is not None
+        assert liq["total_symbols"] == 20
+        assert liq["filtered_symbols"] == 10
+        assert liq["excluded_symbols"] == 10
+
+    def test_high_threshold_filters_all(self, workspace: Path) -> None:
+        config = ProductionConfig(
+            workspace=workspace,
+            strategy_name="I5_cp_gap3d",
+            top_n=5,
+            min_avg_turnover_yen=1e15,  # impossibly high
+        )
+        pipeline = ProductionPipeline(config)
+        result = pipeline.run()
+        assert len(result.signals) == 0  # no data after filter
 
 
 class TestHelpers:

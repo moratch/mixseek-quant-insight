@@ -28,9 +28,53 @@ from quant_insight.signal.generator import I5_CODE
 
 logger = logging.getLogger(__name__)
 
+# I5_HL5 composite: I5 (80%) + HL5_CLOSE_TO_LOW_DEV (20%)
+# Validated: WFE=0.508, PBO=0.389, DSR=3.046
+I5_HL5_CODE = """```python
+import polars as pl
+def generate_signal(ohlcv, additional_data):
+    df = ohlcv.sort(["symbol", "datetime"])
+    cp = pl.when(pl.col("high") == pl.col("low")).then(0.5).otherwise(
+        (pl.col("close") - pl.col("low")) / (pl.col("high") - pl.col("low"))
+    )
+    df = df.with_columns((-cp).fill_null(0.0).alias("raw_cp"))
+    prev_close = pl.col("close").shift(1).over("symbol")
+    overnight = (pl.col("open") - prev_close) / (prev_close + 1e-10)
+    df = df.with_columns(overnight.fill_null(0.0).alias("gap"))
+    df = df.with_columns(
+        (-pl.col("gap").rolling_mean(3).over("symbol")).fill_null(0.0).alias("raw_gap3")
+    )
+    df = df.with_columns(
+        ((pl.col("raw_cp").rank().over("datetime") - 1) /
+         (pl.count().over("datetime") - 1)).fill_null(0.5).alias("n_cp"),
+        ((pl.col("raw_gap3").rank().over("datetime") - 1) /
+         (pl.count().over("datetime") - 1)).fill_null(0.5).alias("n_gap3"),
+    )
+    i5_signal = 0.36 * pl.col("n_cp") + 0.64 * pl.col("n_gap3")
+    df = df.with_columns(i5_signal.alias("i5_raw"))
+
+    ind = additional_data["indicators"]
+    hl5 = ind.select(["datetime", "symbol", "HL5_CLOSE_TO_LOW_DEV"]).drop_nulls()
+    hl5 = hl5.with_columns(
+        ((-pl.col("HL5_CLOSE_TO_LOW_DEV")).rank().over("datetime") /
+         pl.count().over("datetime")).fill_null(0.5).alias("n_hl5")
+    )
+
+    merged = df.select(["datetime", "symbol", "i5_raw"]).join(
+        hl5.select(["datetime", "symbol", "n_hl5"]),
+        on=["datetime", "symbol"],
+        how="inner"
+    )
+    merged = merged.with_columns(
+        (0.80 * pl.col("i5_raw") + 0.20 * pl.col("n_hl5")).alias("signal")
+    )
+    return merged.select(["datetime", "symbol", "signal"])
+```"""
+
 # Strategy registry: validated strategies with their screening results
 VALIDATED_STRATEGIES: dict[str, str] = {
     "I5_cp_gap3d": I5_CODE,
+    "I5_HL5_w80": I5_HL5_CODE,
 }
 
 
@@ -79,6 +123,17 @@ class ProductionResult:
 
 
 @dataclass
+class LiquidityStats:
+    """Liquidity filter statistics."""
+
+    total_symbols: int
+    filtered_symbols: int
+    excluded_symbols: int
+    min_turnover_yen: float
+    lookback_days: int
+
+
+@dataclass
 class ProductionConfig:
     """Configuration for the production pipeline."""
 
@@ -88,6 +143,8 @@ class ProductionConfig:
     short_quantile: float = 0.15
     top_n: int = 50
     holding_period_days: int = 10
+    min_avg_turnover_yen: float = 5e7  # 5,000万円 minimum average daily turnover
+    liquidity_lookback_days: int = 60  # lookback period for avg turnover calculation
     additional_data_names: tuple[str, ...] = ("master", "indicators", "fundamental", "margin")
 
 
@@ -102,6 +159,7 @@ class ProductionPipeline:
         self.config = config
         self._ohlcv: pl.DataFrame | None = None
         self._additional_data: dict[str, pl.DataFrame] = {}
+        self._liquidity_stats: LiquidityStats | None = None
 
     def _load_data(self) -> None:
         """Load OHLCV and additional data from workspace."""
@@ -123,6 +181,56 @@ class ProductionPipeline:
             "Data loaded: OHLCV=%d rows, additional=%s",
             self._ohlcv.height,
             list(self._additional_data.keys()),
+        )
+
+        # Apply liquidity filter
+        if self.config.min_avg_turnover_yen > 0:
+            self._apply_liquidity_filter()
+
+    def _apply_liquidity_filter(self) -> None:
+        """Filter out low-liquidity symbols based on average daily turnover."""
+        assert self._ohlcv is not None
+
+        # Use recent data for turnover calculation
+        max_date = self._ohlcv["datetime"].max()
+        lookback_start = max_date - pl.duration(days=self.config.liquidity_lookback_days * 2)
+        recent = self._ohlcv.filter(pl.col("datetime") >= lookback_start)
+
+        # Calculate average daily turnover (volume × close price) per symbol
+        turnover = (
+            recent.with_columns((pl.col("volume") * pl.col("close")).alias("turnover_yen"))
+            .group_by("symbol")
+            .agg(pl.col("turnover_yen").mean().alias("avg_turnover"))
+        )
+
+        total_symbols = turnover.height
+        liquid_symbols = turnover.filter(pl.col("avg_turnover") >= self.config.min_avg_turnover_yen)["symbol"]
+        liquid_set = set(liquid_symbols.to_list())
+
+        # Filter OHLCV
+        before = self._ohlcv.height
+        self._ohlcv = self._ohlcv.filter(pl.col("symbol").is_in(liquid_symbols))
+
+        # Filter additional data
+        for name, df in self._additional_data.items():
+            if "symbol" in df.columns:
+                self._additional_data[name] = df.filter(pl.col("symbol").is_in(liquid_symbols))
+
+        self._liquidity_stats = LiquidityStats(
+            total_symbols=total_symbols,
+            filtered_symbols=len(liquid_set),
+            excluded_symbols=total_symbols - len(liquid_set),
+            min_turnover_yen=self.config.min_avg_turnover_yen,
+            lookback_days=self.config.liquidity_lookback_days,
+        )
+
+        logger.info(
+            "Liquidity filter: %d/%d symbols pass (min avg turnover %.0f JPY, OHLCV %d -> %d rows)",
+            len(liquid_set),
+            total_symbols,
+            self.config.min_avg_turnover_yen,
+            before,
+            self._ohlcv.height,
         )
 
     def _get_strategy_code(self) -> str:
@@ -255,15 +363,20 @@ class ProductionPipeline:
         data_min = self._ohlcv["datetime"].min()
         data_max = self._ohlcv["datetime"].max()
 
+        config_dict: dict[str, Any] = {
+            "strategy": self.config.strategy_name,
+            "long_quantile": self.config.long_quantile,
+            "short_quantile": self.config.short_quantile,
+            "top_n": self.config.top_n,
+            "holding_period_days": self.config.holding_period_days,
+            "min_avg_turnover_yen": self.config.min_avg_turnover_yen,
+        }
+        if self._liquidity_stats is not None:
+            config_dict["liquidity"] = asdict(self._liquidity_stats)
+
         return ProductionResult(
             signals=signals,
-            config={
-                "strategy": self.config.strategy_name,
-                "long_quantile": self.config.long_quantile,
-                "short_quantile": self.config.short_quantile,
-                "top_n": self.config.top_n,
-                "holding_period_days": self.config.holding_period_days,
-            },
+            config=config_dict,
             generated_at=dt.now().isoformat(),
             data_range=f"{data_min!s} to {data_max!s}",
         )

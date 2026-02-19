@@ -138,6 +138,10 @@ def swing_signal(
         int,
         typer.Option("--top-n", "-n", help="Number of top long/short positions to output"),
     ] = 50,
+    min_turnover: Annotated[
+        float,
+        typer.Option("--min-turnover", help="Min avg daily turnover in JPY (0=no filter)"),
+    ] = 5e7,
     output: Annotated[
         str | None,
         typer.Option("--output", "-o", help="Output JSON path (default: auto-save to workspace/reports/signals/)"),
@@ -153,10 +157,14 @@ def swing_signal(
     at all return horizons) and outputs actionable long/short positions.
     Designed for 10-day holding period swing trading.
 
+    Liquidity filter: by default excludes stocks with avg daily turnover
+    below 50M JPY. Set --min-turnover 0 to disable.
+
     Examples:
         quant-insight signal swing
         quant-insight signal swing --date 2025-12-26
-        quant-insight signal swing --top-n 30 -o positions.json
+        quant-insight signal swing --min-turnover 1e8  # 100M JPY filter
+        quant-insight signal swing --min-turnover 0    # no filter
     """
     logging.basicConfig(
         level=logging.INFO if verbose else logging.WARNING,
@@ -170,15 +178,25 @@ def swing_signal(
         workspace=ws,
         strategy_name=strategy,
         top_n=top_n,
+        min_avg_turnover_yen=min_turnover,
     )
 
     pipeline = ProductionPipeline(config)
-    typer.echo(f"Loading data and generating {strategy} signals...")
+    filter_msg = f", min turnover {min_turnover:,.0f} JPY" if min_turnover > 0 else ""
+    typer.echo(f"Loading data and generating {strategy} signals{filter_msg}...")
     result = pipeline.run(date=date)
 
     if not result.signals:
         typer.echo("No signals generated (date not found in data).", err=True)
         raise typer.Exit(1)
+
+    # Display liquidity filter stats
+    liq = result.config.get("liquidity")
+    if liq:
+        typer.echo(
+            f"Liquidity filter: {liq['filtered_symbols']}/{liq['total_symbols']} symbols "
+            f"(excluded {liq['excluded_symbols']} below {liq['min_turnover_yen']:,.0f} JPY)"
+        )
 
     # Display summary
     for sig in result.signals:
