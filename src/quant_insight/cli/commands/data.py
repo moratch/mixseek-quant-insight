@@ -2,7 +2,7 @@
 
 import asyncio
 from collections.abc import Callable
-from datetime import date
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Annotated
 
@@ -164,6 +164,122 @@ def fetch_boj(
         typer.echo(f"  boj_macro.parquet: {len(boj_df)} rows x {boj_df.shape[1]} cols")
 
     asyncio.run(_fetch())
+    typer.echo("\nDone!")
+
+
+@data_app.command("refresh")
+def refresh_data(
+    plan: Annotated[
+        JQuantsPlan,
+        typer.Option("--plan", "-p", help="J-Quants API plan (free/light/standard/premium)"),
+    ] = JQuantsPlan.FREE,
+    universe: Annotated[
+        JQuantsUniverse,
+        typer.Option("--universe", "-u", help="Target universe (prime/standard/growth/all)"),
+    ] = JQuantsUniverse.PRIME,
+    rebuild_returns: Annotated[
+        bool,
+        typer.Option("--rebuild-returns/--no-rebuild-returns", help="Rebuild returns after refresh"),
+    ] = False,
+    config_path: Annotated[
+        Path | None,
+        typer.Option("--config", "-c", help="Path to competition.toml (for returns rebuild)"),
+    ] = None,
+) -> None:
+    """Incrementally update OHLCV/master data from J-Quants API.
+
+    Detects the latest date in existing ohlcv.parquet and fetches only
+    new data. Appends to existing files with deduplication.
+
+    Examples:
+        quant-insight data refresh
+        quant-insight data refresh --rebuild-returns --config configs/competition.toml
+    """
+    raw_dir = get_raw_data_dir()
+    ohlcv_path = raw_dir / "ohlcv.parquet"
+
+    if not ohlcv_path.exists():
+        typer.echo("No existing data found. Use 'data fetch-jquants' for initial fetch.", err=True)
+        raise typer.Exit(1)
+
+    # Detect max date in existing data
+    existing_ohlcv = pl.read_parquet(ohlcv_path)
+    max_date_raw = existing_ohlcv["datetime"].max()
+    if max_date_raw is None:
+        typer.echo("Existing OHLCV is empty. Use 'data fetch-jquants' for initial fetch.", err=True)
+        raise typer.Exit(1)
+
+    if isinstance(max_date_raw, datetime):
+        existing_max = max_date_raw.date()
+    else:
+        existing_max = date.fromisoformat(str(max_date_raw)[:10])
+
+    # Fetch start = existing max + 1 day
+    fetch_start = existing_max + timedelta(days=1)
+    _, fetch_end = get_default_date_range()
+
+    if fetch_start > fetch_end:
+        typer.echo(f"Data is up to date (latest: {existing_max}, available until: {fetch_end})")
+        return
+
+    typer.echo(f"Incremental refresh: {fetch_start} to {fetch_end}")
+    typer.echo(f"  Existing data: {len(existing_ohlcv)} rows (latest: {existing_max})")
+
+    async def _refresh() -> None:
+        adapter = JQuantsAdapter(plan=plan, universe=universe)
+        try:
+            await adapter.authenticate()
+            symbols = await adapter.get_universe()
+            typer.echo(f"  Target symbols: {len(symbols)}")
+
+            new_data = await adapter.fetch_all_data(symbols, fetch_start, fetch_end)
+
+            # Merge with existing data
+            for name, new_df in new_data.items():
+                existing_path = raw_dir / f"{name}.parquet"
+                if existing_path.exists() and new_df.height > 0:
+                    existing_df = pl.read_parquet(existing_path)
+                    # Deduplicate: concat + unique on key columns
+                    key_cols = ["datetime", "symbol"] if "symbol" in new_df.columns else ["datetime"]
+                    available_keys = [c for c in key_cols if c in existing_df.columns and c in new_df.columns]
+                    if available_keys:
+                        merged = pl.concat([existing_df, new_df], how="diagonal_relaxed")
+                        merged = merged.unique(subset=available_keys, keep="last").sort(available_keys)
+                    else:
+                        merged = pl.concat([existing_df, new_df], how="diagonal_relaxed")
+                    merged.write_parquet(existing_path)
+                    typer.echo(f"  {name}: {len(existing_df)} -> {len(merged)} rows (+{len(new_df)} fetched)")
+                elif new_df.height > 0:
+                    new_df.write_parquet(existing_path)
+                    typer.echo(f"  {name}: {len(new_df)} rows (new)")
+                else:
+                    typer.echo(f"  {name}: no new data")
+        finally:
+            await adapter.close()
+
+    asyncio.run(_refresh())
+
+    # Optionally rebuild returns
+    if rebuild_returns:
+        if config_path is None:
+            typer.echo("Warning: --config required for --rebuild-returns. Skipping.", err=True)
+        else:
+            typer.echo("\nRebuilding returns...")
+            config = load_competition_config(config_path)
+            if config is None:
+                typer.echo(f"Error: Failed to load config from {config_path}", err=True)
+                raise typer.Exit(1)
+
+            updated_ohlcv = pl.read_parquet(ohlcv_path)
+            builder = ReturnBuilder()
+            returns = builder.calculate_returns(
+                updated_ohlcv,
+                window=config.return_definition.window,
+                method=config.return_definition.method,
+            )
+            returns.write_parquet(raw_dir / "returns.parquet")
+            typer.echo(f"  returns.parquet: {len(returns)} rows")
+
     typer.echo("\nDone!")
 
 
