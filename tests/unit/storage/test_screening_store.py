@@ -14,7 +14,6 @@ from quant_insight.pipeline.result_models import (
 )
 from quant_insight.storage.screening_store import ScreeningResultStore
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------

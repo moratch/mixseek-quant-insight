@@ -23,7 +23,6 @@ from quant_insight.pipeline.result_models import (  # noqa: E402
 )
 from quant_insight.storage.screening_store import ScreeningResultStore  # noqa: E402
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
