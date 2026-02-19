@@ -92,6 +92,28 @@ OHLCV_COLUMN_MAPPING: dict[str, str] = {
     "AAdjVo": "afternoon_adj_volume",
 }
 
+# 信用取引週末残高カラムマッピング (margin-interest)
+MARGIN_COLUMN_MAPPING: dict[str, str] = {
+    "Date": "datetime",
+    "Code": "symbol",
+    "ShrtVol": "margin_short_vol",
+    "LongVol": "margin_long_vol",
+    "ShrtNegVol": "margin_short_neg_vol",
+    "LongNegVol": "margin_long_neg_vol",
+    "ShrtStdVol": "margin_short_std_vol",
+    "LongStdVol": "margin_long_std_vol",
+    "IssType": "margin_iss_type",
+}
+
+# 業種別空売り比率カラムマッピング (short-ratio)
+SHORT_RATIO_COLUMN_MAPPING: dict[str, str] = {
+    "Date": "datetime",
+    "S33": "sector33_code",
+    "SellExShortVa": "sell_ex_short_value",
+    "ShrtWithResVa": "short_with_restriction_value",
+    "ShrtNoResVa": "short_no_restriction_value",
+}
+
 # Masterカラムマッピング
 MASTER_COLUMN_MAPPING: dict[str, str] = {
     "Date": "datetime",

@@ -10,8 +10,10 @@ from tqdm import tqdm
 
 from quant_insight.data_build.base_adapter import BaseDataSourceAdapter
 from quant_insight.data_build.jquants.models import (
+    MARGIN_COLUMN_MAPPING,
     MASTER_COLUMN_MAPPING,
     OHLCV_COLUMN_MAPPING,
+    SHORT_RATIO_COLUMN_MAPPING,
     UNIVERSE_TO_MARKET_CODE,
     JQuantsPlan,
     JQuantsUniverse,
@@ -320,13 +322,115 @@ class JQuantsAdapter(BaseDataSourceAdapter):
 
         return df
 
+    async def fetch_margin_interest(
+        self,
+        symbols: list[str],
+        start_date: date,
+        end_date: date,
+    ) -> pl.DataFrame:
+        """信用取引週末残高を取得（週次、日付単位で全銘柄）.
+
+        Standard プラン以上で利用可能。週次データのため金曜日のみデータが存在する。
+
+        Args:
+            symbols: 銘柄コードのリスト（フィルタ用）
+            start_date: 取得開始日
+            end_date: 取得終了日
+
+        Returns:
+            pl.DataFrame: 信用取引残高データ
+        """
+        all_data = await self._fetch_paginated_data_by_date(
+            endpoint="/markets/margin-interest",
+            symbols=symbols,
+            start_date=start_date,
+            end_date=end_date,
+            description="Fetching Margin Interest",
+        )
+
+        if not all_data:
+            return pl.DataFrame(
+                schema={
+                    "datetime": pl.Datetime,
+                    "symbol": pl.Utf8,
+                    "margin_short_vol": pl.Float64,
+                    "margin_long_vol": pl.Float64,
+                }
+            )
+
+        df = pl.DataFrame(all_data)
+        rename_dict = {k: v for k, v in MARGIN_COLUMN_MAPPING.items() if k in df.columns}
+        df = df.rename(rename_dict)
+
+        if "datetime" in df.columns:
+            df = df.with_columns(pl.col("datetime").str.to_datetime("%Y-%m-%d").alias("datetime"))
+
+        df = df.sort(["symbol", "datetime"])
+        return df
+
+    async def fetch_short_ratio(
+        self,
+        start_date: date,
+        end_date: date,
+    ) -> pl.DataFrame:
+        """業種別空売り比率を取得（日次、全33業種）.
+
+        Standard プラン以上で利用可能。
+
+        Args:
+            start_date: 取得開始日
+            end_date: 取得終了日
+
+        Returns:
+            pl.DataFrame: 業種別空売り比率データ
+        """
+        all_data: list[dict[str, object]] = []
+        current_date = start_date
+        total_days = (end_date - start_date).days + 1
+
+        with tqdm(total=total_days, desc="Fetching Short Ratio") as pbar:
+            while current_date <= end_date:
+                date_str = current_date.isoformat()
+
+                try:
+                    data = await self._request_with_retry(
+                        "/markets/short-ratio", {"date": date_str}
+                    )
+                except httpx.HTTPError as e:
+                    raise DataFetchError(f"Failed to fetch short ratio for {date_str}: {e}") from e
+
+                all_data.extend(data.get("data", []))
+                current_date += timedelta(days=1)
+                pbar.update(1)
+
+        if not all_data:
+            return pl.DataFrame(
+                schema={
+                    "datetime": pl.Datetime,
+                    "sector33_code": pl.Utf8,
+                    "sell_ex_short_value": pl.Float64,
+                }
+            )
+
+        df = pl.DataFrame(all_data)
+        rename_dict = {k: v for k, v in SHORT_RATIO_COLUMN_MAPPING.items() if k in df.columns}
+        df = df.rename(rename_dict)
+
+        if "datetime" in df.columns:
+            df = df.with_columns(pl.col("datetime").str.to_datetime("%Y-%m-%d").alias("datetime"))
+
+        df = df.sort(["datetime", "sector33_code"])
+        return df
+
     async def fetch_all_data(
         self,
         symbols: list[str],
         start_date: date,
         end_date: date,
     ) -> dict[str, pl.DataFrame]:
-        """全データを取得（OHLCV + マスタ）.
+        """全データを取得（OHLCV + マスタ + マージン）.
+
+        Standard プラン以上の場合は信用取引データも取得する。
 
         Args:
             symbols: 銘柄コードのリスト
@@ -337,15 +441,26 @@ class JQuantsAdapter(BaseDataSourceAdapter):
             dict[str, pl.DataFrame]: {
                 "ohlcv": pl.DataFrame,
                 "master": pl.DataFrame,
+                "margin": pl.DataFrame,       # Standard+
+                "short_ratio": pl.DataFrame,   # Standard+
             }
         """
         ohlcv = await self.fetch_ohlcv(symbols, start_date, end_date)
         master = await self.fetch_master(symbols, start_date, end_date)
 
-        return {
+        result: dict[str, pl.DataFrame] = {
             "ohlcv": ohlcv,
             "master": master,
         }
+
+        # Standard プラン以上で信用取引データを取得
+        if self.plan in (JQuantsPlan.STANDARD, JQuantsPlan.PREMIUM):
+            margin = await self.fetch_margin_interest(symbols, start_date, end_date)
+            short_ratio = await self.fetch_short_ratio(start_date, end_date)
+            result["margin"] = margin
+            result["short_ratio"] = short_ratio
+
+        return result
 
     async def close(self) -> None:
         """HTTPクライアントを閉じる."""

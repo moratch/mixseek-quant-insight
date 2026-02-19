@@ -9,6 +9,7 @@ from typing import Annotated
 import polars as pl
 import typer
 
+from quant_insight.data_build.boj import BOJMacroAdapter
 from quant_insight.data_build.data_splitter import DataSplitter
 from quant_insight.data_build.execution_analyzer import ExecutionAnalyzer
 from quant_insight.data_build.jquants import JQuantsAdapter, JQuantsPlan, JQuantsUniverse
@@ -104,11 +105,63 @@ def fetch_jquants(
             adapter.save(data, output_dir)
 
             typer.echo(f"\nData saved to: {output_dir}")
-            typer.echo(f"  ohlcv.parquet: {len(data['ohlcv'])} rows")
-            typer.echo(f"  master.parquet: {len(data['master'])} rows")
+            for name, df in data.items():
+                typer.echo(f"  {name}.parquet: {len(df)} rows x {df.shape[1]} cols")
 
         finally:
             await adapter.close()
+
+    asyncio.run(_fetch())
+    typer.echo("\nDone!")
+
+
+@data_app.command("fetch-boj")
+def fetch_boj(
+    start_date_str: Annotated[
+        str | None,
+        typer.Option("--start-date", "-s", help="Start date (YYYY-MM-DD). Default: all available"),
+    ] = None,
+    end_date_str: Annotated[
+        str | None,
+        typer.Option("--end-date", "-e", help="End date (YYYY-MM-DD). Default: latest"),
+    ] = None,
+) -> None:
+    """Fetch BOJ macro data from local Parquet store.
+
+    Reads boj_latest.parquet and converts to wide format for competition use.
+    Requires BOJ_DATA_ROOT environment variable (or uses default path).
+
+    Example:
+        quant-insight data fetch-boj
+        quant-insight data fetch-boj --start-date 2020-01-01
+    """
+    typer.echo("Fetching BOJ macro data...")
+
+    async def _fetch() -> None:
+        adapter = BOJMacroAdapter()
+        await adapter.authenticate()
+
+        start = date.fromisoformat(start_date_str) if start_date_str else date(2000, 1, 1)
+        end = date.fromisoformat(end_date_str) if end_date_str else date.today()
+
+        typer.echo(f"  Period: {start} to {end}")
+
+        data = await adapter.fetch_all_data([], start, end)
+
+        # 日付フィルタ
+        boj_df = data["boj_macro"]
+        boj_df = boj_df.filter(
+            (pl.col("datetime") >= pl.lit(start).cast(pl.Datetime("ms")))
+            & (pl.col("datetime") <= pl.lit(end).cast(pl.Datetime("ms")))
+        )
+
+        output_dir = get_raw_data_dir()
+        output_dir.mkdir(parents=True, exist_ok=True)
+        output_path = output_dir / "boj_macro.parquet"
+        boj_df.write_parquet(output_path)
+
+        typer.echo(f"\nData saved to: {output_path}")
+        typer.echo(f"  boj_macro.parquet: {len(boj_df)} rows x {boj_df.shape[1]} cols")
 
     asyncio.run(_fetch())
     typer.echo("\nDone!")
